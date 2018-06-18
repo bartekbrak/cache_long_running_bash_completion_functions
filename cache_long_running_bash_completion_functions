@@ -1,0 +1,94 @@
+# cache (long running) bash completion functions
+# author: bartek.rychlicki@gmail.com
+# 2018-06-18
+# LICENSE: https://en.wikipedia.org/wiki/WTFPL
+
+# example use:
+# source cache_long_running_bash_completion_functions
+# source /usr/share/bash-completion/completions/docker-compose  # gets _docker_compose
+# cached.bash_completions.enable _docker_compose docker-compose dc
+
+# Notes:
+# https://stackoverflow.com/a/3355375/1472229
+# TODO: test under sh, zsh, remove bash dependency
+# TODO: will different versions of sed work (MacOs)
+# TODO: detect infinite loops with recursive? completions (maybe _docker)
+# TODO: handle empty completions (don't cache)
+
+_cached_bash_completions() {
+    # $1 original_completion_function
+    # example: _cached_bash_completions _docker_compose
+    #
+    # Do standard bash completion given original_completion_function and
+    # COMP_WORDS and COMP_CWORD provided by complete.
+    # After first usage, cache the results. Tap Tab REFRESH_CACHE times to skip
+    # cache.
+    #
+    # The mechanism is simple memoization plus bash eval trickery to preserve
+    # state across usages.
+    #
+    # Some commands are pwd-sensitive so this function is always pwd sensitive.
+    # Cached files are stored in /dev/shm in-memory FS, removed with reboot.
+    # The function treats `app s` and `app st` and creates separate files. :/
+
+
+    local REFRESH_CACHE=4  # 3
+    local unique_id
+    unique_id=$(echo "$(pwd)_${COMP_WORDS[*]}"  | sed -r s/[^a-zA-Z0-9]+/_/g )
+    # TODO: this variable should be cleared once completion is finished
+    # but I see no other way than to put it in PROMPT_COMMAND
+    tries=${tries:-1}
+    local cache_file="/dev/shm/${unique_id}.cache"
+
+    if [ -f "$cache_file" ] && [ "$tries" != $REFRESH_CACHE ]
+    then
+        # read from cache
+        COMPREPLY=($(compgen -W "$(cat $cache_file)" -- ${COMP_WORDS[COMP_CWORD]}))
+        echo -en "$(tput sc; tput el)"
+        echo  -n "  <- Completion cached read from $cache_file ($tries),"
+        echo -en "$(tput rc)"
+        tries=$((tries + 1))
+    else
+        $1  # run original_completion_function
+        echo "${COMPREPLY[*]}" > "$cache_file"
+        unset tries
+        echo -en "$(tput sc; tput el)"
+        echo  -n "  <- Completion stored in $cache_file."
+        echo -en "$(tput rc)"
+    fi
+}
+
+_cached_bash_completions_unset() {
+    unset tries
+}
+
+cached.bash_completions.enable() {
+    # $1 existing bash completion function
+    # $2- space separated words to complete on
+    # example:
+    #     cached.bash_completions.enable _docker_compose docker-compose dc
+
+    func_name=$(echo "$@" | sed -r s/[^a-zA-Z0-9]+/_/g)
+    declare -f "$1" > /dev/null || {
+        echo "$1 does not exist"
+        return 1
+    }
+    eval "$func_name() { _cached_bash_completions $1; }"
+    shift
+    complete -F "$func_name" "$@"
+
+    if [[ $PROMPT_COMMAND != *"_cached_bash_completions_unset"* ]]; then
+      export PROMPT_COMMAND="_cached_bash_completions_unset;$PROMPT_COMMAND"
+    fi
+
+}
+
+cached.bash_completions.disable() {
+    # example:
+    #     cached.bash_completions.disable docker-compose dc
+
+    complete -r "$@"
+
+}
+
+cached.bash_completions.enable _docker_compose docker-compose dc
